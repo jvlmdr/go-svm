@@ -12,12 +12,15 @@ import (
 
 const eps = 1e-9
 
+type TerminateFunc func(epoch int, f, fPrev, g, gPrev float64, w, wPrev []float64, a, aPrev map[Index]float64) (bool, error)
+
+// Train computes the weight vector of a linear SVM.
 // The training set is made up of n sets of vectors.
 // Each set x[i] has a label y[i] and contains
 // an arbitrary number of vectors, but cannot be empty.
 // The vectors must all have the same dimension.
 // The labels y[i] are assumed to be in {-1, 1}.
-func Train(x [][][]float64, y []float64, cost []float64) ([]float64, error) {
+func Train(x [][][]float64, y []float64, cost []float64, termfunc TerminateFunc) ([]float64, error) {
 	// See http://arxiv.org/abs/1312.1743
 	//
 	// The problem is to find w to minimize
@@ -53,33 +56,32 @@ func Train(x [][][]float64, y []float64, cost []float64) ([]float64, error) {
 	all := numVectors(x)
 
 	// Initialize dual variables and weights to zero.
-	a := make(map[index]float64)
-	w := make([]float64, m)
-	// Sum of dual variables for each set.
+	var (
+		w  = make([]float64, m)
+		a  = make(map[Index]float64)
+		lb = math.Inf(-1)
+		ub = math.Inf(1)
+	)
+	// Maintain sum of dual variables for each set.
 	sum := make([]float64, len(x))
+	// Cumulative sum of number of elements in each set.
+	cdf := cumSumLens(x)
 
-	s := cumSumLens(x)
 	for epoch := 0; ; epoch++ {
 		log.Println("epoch", epoch)
-		log.Printf("sparsity: %d / %d", len(a), s[len(s)-1])
+		log.Printf("sparsity: %d / %d", len(a), cdf[len(cdf)-1])
 
-		// Evaluate dual objective.
-		lb := -0.5*floats.Dot(w, w) + floats.Sum(sum)
-		log.Println("dual:", lb)
-		// Evaluate primal objective.
-		ub := 0.5 * floats.Dot(w, w)
-		for i := range x {
-			var loss float64
-			for j := range x[i] {
-				loss = math.Max(loss, 1-y[i]*floats.Dot(x[i][j], w))
-			}
-			ub += cost[i] * loss
+		wPrev := make([]float64, len(w))
+		copy(wPrev, w)
+		aPrev := make(map[Index]float64)
+		for idx, val := range a {
+			aPrev[idx] = val
 		}
-		log.Println("primal:", ub)
-		log.Printf("bounds: [%.4g, %.4g]", lb, ub)
+		ubPrev := ub
+		lbPrev := lb
 
 		for iter := 0; iter < all; iter++ {
-			i, j := randCumSum(s)
+			i, j := randCumSum(cdf)
 			// Consider the dual objective
 			//   f(a + t e[ij]) = 1/2 h t^2 - g t + const.
 			// where
@@ -95,20 +97,20 @@ func Train(x [][][]float64, y []float64, cost []float64) ([]float64, error) {
 
 			if gj < 0 {
 				// Decrease a[ij] subject to separable constraint that a[ij] >= 0.
-				if tmp := a[index{i, j}] + tj; tmp > 0 {
+				if tmp := a[Index{i, j}] + tj; tmp > 0 {
 					// Constraint would not be violated.
-					a[index{i, j}] = tmp
-					log.Println("decrease j, unconstr, t:", tj)
+					a[Index{i, j}] = tmp
+					//log.Println("decrease j, unconstr, t:", tj)
 				} else {
-					if a[index{i, j}] == 0 {
-						log.Println("cannot decrease j")
+					if a[Index{i, j}] == 0 {
+						//log.Println("cannot decrease j")
 						continue
 					}
 					// Constraint would be violated.
-					// Choose tj such that a[index{i, j}] + tj = 0.
-					tj = -a[index{i, j}]
-					delete(a, index{i, j})
-					log.Println("decrease j, constr, t:", tj)
+					// Choose tj such that a[Index{i, j}] + tj = 0.
+					tj = -a[Index{i, j}]
+					delete(a, Index{i, j})
+					//log.Println("decrease j, constr, t:", tj)
 				}
 				sum[i] += tj
 				floats.AddScaled(w, tj*y[i], x[i][j])
@@ -119,14 +121,14 @@ func Train(x [][][]float64, y []float64, cost []float64) ([]float64, error) {
 			if sum[i] < cost[i] {
 				if tmp := sum[i] + tj; tmp <= cost[i] {
 					sum[i] = tmp
-					log.Println("increase j, unconstr, t:", tj)
+					//log.Println("increase j, unconstr, t:", tj)
 				} else {
 					// Choose tj such that sum[i] + tj = cost[i]
 					tj = cost[i] - sum[i]
 					sum[i] = cost[i]
-					log.Println("increase j, constr, t:", tj)
+					//log.Println("increase j, constr, t:", tj)
 				}
-				a[index{i, j}] += tj
+				a[Index{i, j}] += tj
 				floats.AddScaled(w, tj*y[i], x[i][j])
 				continue
 			}
@@ -179,46 +181,77 @@ func Train(x [][][]float64, y []float64, cost []float64) ([]float64, error) {
 			gjk := gj - gk
 			tjk := gjk / hjk
 			if tjk == 0 {
-				log.Println("no change to i or j")
+				//log.Println("no change to i or j")
 				continue
 			}
 			if tjk < 0 {
 				// Decrease a[ij], increase a[ik]. Ensure a[ij] >= 0.
-				if tmp := a[index{i, j}] + tjk; tmp > 0 {
-					a[index{i, j}] = tmp
-					log.Println("increase k, decrease j, unconstr, t:", tjk)
+				if tmp := a[Index{i, j}] + tjk; tmp > 0 {
+					a[Index{i, j}] = tmp
+					//log.Println("increase k, decrease j, unconstr, t:", tjk)
 				} else {
-					if a[index{i, j}] == 0 {
-						log.Println("would increase k, but cannot decrease j")
+					if a[Index{i, j}] == 0 {
+						//log.Println("would increase k, but cannot decrease j")
 						continue
 					}
-					// Choose tjk such that a[index{i, j}] + tjk = 0
-					tjk = -a[index{i, j}]
-					delete(a, index{i, j})
-					log.Println("increase k, decrease j, constr, t:", tjk)
+					// Choose tjk such that a[Index{i, j}] + tjk = 0
+					tjk = -a[Index{i, j}]
+					delete(a, Index{i, j})
+					//log.Println("increase k, decrease j, constr, t:", tjk)
 				}
-				a[index{i, j}] -= tjk
+				a[Index{i, j}] -= tjk
 			} else {
 				// Increase a[ij], decrease a[ik]. Ensure a[ik] >= 0.
-				if tmp := a[index{i, k}] - tjk; tmp > 0 {
-					a[index{i, k}] = tmp
-					log.Println("increase j, decrease k, unconstr, t:", tjk)
+				if tmp := a[Index{i, k}] - tjk; tmp > 0 {
+					a[Index{i, k}] = tmp
+					//log.Println("increase j, decrease k, unconstr, t:", tjk)
 				} else {
-					if a[index{i, k}] == 0 {
-						log.Println("would increase j, but cannot decrease k")
+					if a[Index{i, k}] == 0 {
+						//log.Println("would increase j, but cannot decrease k")
 						continue
 					}
-					// Choose tjk such that a[index{i, k}] - tjk = 0
-					tjk = a[index{i, k}]
-					delete(a, index{i, k})
-					log.Println("increase j, decrease k, constr, t:", tjk)
+					// Choose tjk such that a[Index{i, k}] - tjk = 0
+					tjk = a[Index{i, k}]
+					delete(a, Index{i, k})
+					//log.Println("increase j, decrease k, constr, t:", tjk)
 				}
-				a[index{i, j}] += tjk
+				a[Index{i, j}] += tjk
 			}
 			floats.AddScaled(w, tjk*y[i], x[i][j])
 			floats.AddScaled(w, -tjk*y[i], x[i][k])
 		}
+
+		lb = dual(w, sum)
+		//log.Println("dual:", lb)
+		ub = primal(w, x, y, cost)
+		//log.Println("primal:", ub)
+		//log.Printf("bounds: [%.4g, %.4g]", lb, ub)
+
+		term, err := termfunc(epoch+1, ub, ubPrev, lb, lbPrev, w, wPrev, a, aPrev)
+		if err != nil {
+			return nil, err
+		}
+		if term {
+			return w, nil
+		}
 	}
+}
+
+func dual(w []float64, sum []float64) float64 {
+	return -0.5*floats.Dot(w, w) + floats.Sum(sum)
+}
+
+func primal(w []float64, x [][][]float64, y []float64, c []float64) float64 {
+	// Evaluate primal objective.
+	f := 0.5 * floats.Dot(w, w)
+	for i := range x {
+		var loss float64
+		for j := range x[i] {
+			loss = math.Max(loss, 1-y[i]*floats.Dot(x[i][j], w))
+		}
+		f += c[i] * loss
+	}
+	return f
 }
 
 // RandCumSum returns a number i such that 0 <= i < len(s)-1.
@@ -246,7 +279,7 @@ func randCumSum(s []int) (i, rem int) {
 	return
 }
 
-type index struct{ Set, Elem int }
+type Index struct{ Set, Elem int }
 
 // ErrIfAnyEmpty returns an error if any of the vector sets is empty.
 func errIfAnyEmpty(x [][][]float64) error {
