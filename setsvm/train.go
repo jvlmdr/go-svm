@@ -12,6 +12,8 @@ import (
 
 const eps = 1e-9
 
+type Index struct{ Set, Elem int }
+
 type TerminateFunc func(epoch int, f, fPrev, g, gPrev float64, w, wPrev []float64, a, aPrev map[Index]float64) (bool, error)
 
 // Train computes the weight vector of a linear SVM.
@@ -20,16 +22,16 @@ type TerminateFunc func(epoch int, f, fPrev, g, gPrev float64, w, wPrev []float6
 // an arbitrary number of vectors, but cannot be empty.
 // The vectors must all have the same dimension.
 // The labels y[i] are assumed to be in {-1, 1}.
-func Train(x [][][]float64, y []float64, cost []float64, termfunc TerminateFunc) ([]float64, error) {
+func Train(x Set, y []float64, cost []float64, termfunc TerminateFunc) ([]float64, error) {
 	// See http://arxiv.org/abs/1312.1743
 	//
 	// The problem is to find w to minimize
-	//   1/2 w'w + sum_i C_i max_j max(0, 1 - y[i] dot(x[i][j], w))
+	//   1/2 w'w + sum_i C_i max_j max(0, 1 - y[i] dot(x[ij], w))
 	//
 	// This is transformed to a constrained problem
 	//   1/2 w'w + sum_i xi[i]
 	// where xi[i] >= 0,
-	//       xi[i] >= 1 - y[i] dot(x[i][j], w) for all j.
+	//       xi[i] >= 1 - y[i] dot(x[ij], w) for all j.
 	//
 	// The dual is to find alpha to minimize
 	//   1/2 sum_{ij} sum_{kl} a[ij] a[kl] y[i] y[k] dot(x[ij], x[kl]) - sum_{ij} a[ij]
@@ -48,12 +50,9 @@ func Train(x [][][]float64, y []float64, cost []float64, termfunc TerminateFunc)
 		return nil, err
 	}
 	// Get the dimension of the vectors.
-	m, err := dimension(x)
-	if err != nil {
-		return nil, err
-	}
+	m := x.Dim()
 	// Get the total number of vectors.
-	all := numVectors(x)
+	all := x.NumExamples()
 
 	// Initialize dual variables and weights to zero.
 	var (
@@ -63,7 +62,7 @@ func Train(x [][][]float64, y []float64, cost []float64, termfunc TerminateFunc)
 		ub = math.Inf(1)
 	)
 	// Maintain sum of dual variables for each set.
-	sum := make([]float64, len(x))
+	sum := make([]float64, x.NumSets())
 	// Cumulative sum of number of elements in each set.
 	cdf := cumSumLens(x)
 
@@ -87,8 +86,8 @@ func Train(x [][][]float64, y []float64, cost []float64, termfunc TerminateFunc)
 			// where
 			//   -g = sum_{kl} a[kl] y[i] y[k] dot(x[ij], x[kl]) - 1
 			//   g = 1 - y[i] dot(x[ij], w)
-			hj := floats.Dot(x[i][j], x[i][j])
-			gj := 1 - y[i]*floats.Dot(x[i][j], w)
+			hj := floats.Dot(x.At(i, j), x.At(i, j))
+			gj := 1 - y[i]*floats.Dot(x.At(i, j), w)
 			tj := gj / hj
 			if math.Abs(gj) <= eps {
 				// Consider this optimal.
@@ -113,7 +112,7 @@ func Train(x [][][]float64, y []float64, cost []float64, termfunc TerminateFunc)
 					//log.Println("decrease j, constr, t:", tj)
 				}
 				sum[i] += tj
-				floats.AddScaled(w, tj*y[i], x[i][j])
+				floats.AddScaled(w, tj*y[i], x.At(i, j))
 				continue
 			}
 
@@ -129,17 +128,17 @@ func Train(x [][][]float64, y []float64, cost []float64, termfunc TerminateFunc)
 					//log.Println("increase j, constr, t:", tj)
 				}
 				a[Index{i, j}] += tj
-				floats.AddScaled(w, tj*y[i], x[i][j])
+				floats.AddScaled(w, tj*y[i], x.At(i, j))
 				continue
 			}
 
 			// Choose a random k != j.
 			k := j
 			for k != j {
-				k = rand.Intn(len(x[i]))
+				k = rand.Intn(x.SetLen(i))
 			}
-			hk := floats.Dot(x[i][k], x[i][k])
-			gk := 1 - y[i]*floats.Dot(x[i][k], w)
+			hk := floats.Dot(x.At(i, k), x.At(i, k))
+			gk := 1 - y[i]*floats.Dot(x.At(i, k), w)
 
 			//	// Find some k != j such that a[ik] should also be increased.
 			//	var (
@@ -147,12 +146,12 @@ func Train(x [][][]float64, y []float64, cost []float64, termfunc TerminateFunc)
 			//		found  bool
 			//	    hk, gk float64
 			//	)
-			//	for _, k = range rand.Perm(len(x[i])) {
+			//	for _, k = range rand.Perm(x.SetLen(i)) {
 			//		if k == j {
 			//			continue
 			//		}
-			//		hk = floats.Dot(x[i][k], x[i][k])
-			//		gk = 1 - y[i]*floats.Dot(x[i][k], w)
+			//		hk = floats.Dot(x.At(i, k), x.At(i, k))
+			//		gk = 1 - y[i]*floats.Dot(x.At(i, k), w)
 			//		if math.Abs(gk) <= eps {
 			//			continue
 			//		}
@@ -177,7 +176,7 @@ func Train(x [][][]float64, y []float64, cost []float64, termfunc TerminateFunc)
 			// (y[i] does not appear above since y[i] y[i] = 1)
 			//   -g = sum_{pq} a[pq] K_{pq,ij} - sum_{pq} a[pq] K_{pq,ik}
 			//   g = -w' y[i] x[ij] + w' y[i] x[ik]
-			hjk := hj - 2*floats.Dot(x[i][j], x[i][k]) + hk
+			hjk := hj - 2*floats.Dot(x.At(i, j), x.At(i, k)) + hk
 			gjk := gj - gk
 			tjk := gjk / hjk
 			if tjk == 0 {
@@ -217,8 +216,8 @@ func Train(x [][][]float64, y []float64, cost []float64, termfunc TerminateFunc)
 				}
 				a[Index{i, j}] += tjk
 			}
-			floats.AddScaled(w, tjk*y[i], x[i][j])
-			floats.AddScaled(w, -tjk*y[i], x[i][k])
+			floats.AddScaled(w, tjk*y[i], x.At(i, j))
+			floats.AddScaled(w, -tjk*y[i], x.At(i, k))
 		}
 
 		lb = dual(w, sum)
@@ -241,13 +240,13 @@ func dual(w []float64, sum []float64) float64 {
 	return -0.5*floats.Dot(w, w) + floats.Sum(sum)
 }
 
-func primal(w []float64, x [][][]float64, y []float64, c []float64) float64 {
+func primal(w []float64, x Set, y []float64, c []float64) float64 {
 	// Evaluate primal objective.
 	f := 0.5 * floats.Dot(w, w)
-	for i := range x {
+	for i := 0; i < x.NumSets(); i++ {
 		var loss float64
-		for j := range x[i] {
-			loss = math.Max(loss, 1-y[i]*floats.Dot(x[i][j], w))
+		for j := 0; j < x.SetLen(i); j++ {
+			loss = math.Max(loss, 1-y[i]*floats.Dot(x.At(i, j), w))
 		}
 		f += c[i] * loss
 	}
@@ -279,56 +278,22 @@ func randCumSum(s []int) (i, rem int) {
 	return
 }
 
-type Index struct{ Set, Elem int }
-
 // ErrIfAnyEmpty returns an error if any of the vector sets is empty.
-func errIfAnyEmpty(x [][][]float64) error {
-	for i, xi := range x {
-		if len(xi) == 0 {
+func errIfAnyEmpty(x Set) error {
+	for i := 0; i < x.NumSets(); i++ {
+		if x.SetLen(i) == 0 {
 			return fmt.Errorf("set %d is empty", i)
 		}
 	}
 	return nil
 }
 
-// NumVectors returns the number of vectors in a collection of sets.
-func numVectors(x [][][]float64) int {
-	var n int
-	for _, xi := range x {
-		n += len(xi)
-	}
-	return n
-}
-
-// CumSumLens returns a list of len(x)+1 elements.
-// The number of elements in x[0, ..., i-1] is s[i].
-func cumSumLens(x [][][]float64) []int {
-	s := make([]int, len(x)+1)
-	for i, xi := range x {
-		s[i+1] = s[i] + len(xi)
+// CumSumLens returns a list of len(x) elements.
+// The total number of elements in x[0..i] is s[i].
+func cumSumLens(x Set) []int {
+	s := make([]int, x.NumSets()+1)
+	for i := 0; i < x.NumSets(); i++ {
+		s[i+1] = s[i] + x.SetLen(i)
 	}
 	return s
-}
-
-// Dimension returns the dimension of
-// the vectors in a set of example sets.
-// Returns an error if vectors of different dimension are found
-// or there are no vectors.
-func dimension(x [][][]float64) (int, error) {
-	n := -1
-	for i := range x {
-		for j := range x[i] {
-			if n < 0 {
-				n = len(x[i][j])
-				continue
-			}
-			if n != len(x[i][j]) {
-				return 0, fmt.Errorf("vector dims: found %d and %d", n, len(x[i][j]))
-			}
-		}
-	}
-	if n < 0 {
-		return 0, fmt.Errorf("no vectors found")
-	}
-	return n, nil
 }

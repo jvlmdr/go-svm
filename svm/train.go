@@ -1,7 +1,6 @@
 package svm
 
 import (
-	"fmt"
 	"log"
 	"math"
 	"math/rand"
@@ -14,15 +13,12 @@ const eps = 1e-9
 type TerminateFunc func(epoch int, f, fPrev, g, gPrev float64, w, wPrev []float64, a, aPrev map[int]float64) (bool, error)
 
 // Train computes the weight vector of a linear SVM.
-// Each example x[i] has a label y[i].
+// Each example x.At(i) has a label y[i].
 // The vectors must all have the same dimension.
 // The labels y[i] are assumed to be in {-1, 1}.
-func Train(x [][]float64, y []float64, cost []float64, termfunc TerminateFunc) ([]float64, error) {
+func Train(x Set, y []float64, cost []float64, termfunc TerminateFunc) ([]float64, error) {
 	// Get the dimension of the vectors.
-	m, err := dimension(x)
-	if err != nil {
-		return nil, err
-	}
+	m := x.Dim()
 	// Initialize dual variables and weights to zero.
 	var (
 		a  = make(map[int]float64)
@@ -33,7 +29,7 @@ func Train(x [][]float64, y []float64, cost []float64, termfunc TerminateFunc) (
 
 	for epoch := 0; ; epoch++ {
 		log.Println("epoch", epoch)
-		log.Printf("sparsity: %d / %d", len(a), len(x))
+		log.Printf("sparsity: %d / %d", len(a), x.Len())
 
 		wPrev := make([]float64, len(w))
 		copy(wPrev, w)
@@ -44,20 +40,20 @@ func Train(x [][]float64, y []float64, cost []float64, termfunc TerminateFunc) (
 		ubPrev := ub
 		lbPrev := lb
 
-		for iter := 0; iter < len(x); iter++ {
-			i := rand.Intn(len(x))
+		for iter := 0; iter < x.Len(); iter++ {
+			i := rand.Intn(x.Len())
 			// Consider the dual objective
 			//   f(a + t e[i]) = 1/2 h t^2 - g t + const.
 			// where
 			//   h = dot(x[i], x[i])
 			//   -g = sum_{j} a[j] y[i] y[j] dot(x[i], x[j]) - 1
 			//   g = 1 - y[i] dot(x[i], w)
-			g := 1 - y[i]*floats.Dot(x[i], w)
+			g := 1 - y[i]*floats.Dot(x.At(i), w)
 			if math.Abs(g) <= eps {
 				// Consider this optimal.
 				continue
 			}
-			h := floats.Dot(x[i], x[i])
+			h := floats.Dot(x.At(i), x.At(i))
 			t := g / h
 			if t == 0 {
 				// No change.
@@ -95,7 +91,7 @@ func Train(x [][]float64, y []float64, cost []float64, termfunc TerminateFunc) (
 					//log.Println("increase i, constr, t:", t)
 				}
 			}
-			floats.AddScaled(w, t*y[i], x[i])
+			floats.AddScaled(w, t*y[i], x.At(i))
 		}
 
 		lb = dual(w, a)
@@ -123,27 +119,10 @@ func dual(w []float64, a map[int]float64) float64 {
 	return f
 }
 
-func primal(w []float64, x [][]float64, y []float64, c []float64) float64 {
+func primal(w []float64, x Set, y []float64, c []float64) float64 {
 	f := 0.5 * floats.Dot(w, w)
-	for i := range x {
-		f += c[i] * math.Max(0, 1-y[i]*floats.Dot(x[i], w))
+	for i := 0; i < x.Len(); i++ {
+		f += c[i] * math.Max(0, 1-y[i]*floats.Dot(x.At(i), w))
 	}
 	return f
-}
-
-// Dimension returns the dimension of
-// the vectors in a set of examples.
-// Returns an error if vectors of different dimension are found
-// or there are no vectors.
-func dimension(x [][]float64) (int, error) {
-	if len(x) == 0 {
-		return 0, fmt.Errorf("empty list")
-	}
-	n := len(x[0])
-	for _, xi := range x {
-		if n != len(xi) {
-			return 0, fmt.Errorf("vector dims: found %d and %d", n, len(xi))
-		}
-	}
-	return n, nil
 }

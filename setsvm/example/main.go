@@ -58,7 +58,7 @@ func main() {
 		z[i], z[j] = z[j], z[i]
 	}
 
-	w, err := setsvm.Train(x, y, cset,
+	w, err := setsvm.Train(setsvm.Slice(x), y, cset,
 		func(epoch int, f, fPrev, g, gPrev float64, w, wPrev []float64, a, aPrev map[setsvm.Index]float64) (bool, error) {
 			log.Printf("epoch: %d, f: %.6g, g: %.6g, gap: %.6g", epoch, f, g, f-g)
 			if f-g < 1e-4 {
@@ -84,7 +84,7 @@ func main() {
 	}
 	fmt.Println(w)
 
-	q, err := svm.Train(u, v, z,
+	q, err := svm.Train(svm.Slice(u), v, z,
 		func(epoch int, f, fPrev, g, gPrev float64, w, wPrev []float64, a, aPrev map[int]float64) (bool, error) {
 			log.Printf("epoch: %d, f: %.6g, g: %.6g, gap: %.6g", epoch, f, g, f-g)
 			if f-g < 1e-4 {
