@@ -17,8 +17,8 @@ type TerminateFunc func(epoch int, f, fPrev, g, gPrev float64, w, wPrev []float6
 // The vectors must all have the same dimension.
 // The labels y[i] are assumed to be in {-1, 1}.
 func Train(x Set, y []float64, cost []float64, termfunc TerminateFunc) ([]float64, error) {
-	// Get the dimension of the vectors.
-	m := x.Dim()
+	// Get the dimension and number of vectors.
+	m, n := x.Dim(), x.Len()
 	// Initialize dual variables and weights to zero.
 	var (
 		a  = make(map[int]float64)
@@ -28,9 +28,6 @@ func Train(x Set, y []float64, cost []float64, termfunc TerminateFunc) ([]float6
 	)
 
 	for epoch := 0; ; epoch++ {
-		log.Println("epoch", epoch)
-		log.Printf("sparsity: %d / %d", len(a), x.Len())
-
 		wPrev := make([]float64, len(w))
 		copy(wPrev, w)
 		aPrev := make(map[int]float64)
@@ -40,8 +37,12 @@ func Train(x Set, y []float64, cost []float64, termfunc TerminateFunc) ([]float6
 		ubPrev := ub
 		lbPrev := lb
 
-		for iter := 0; iter < x.Len(); iter++ {
-			i := rand.Intn(x.Len())
+		for iter := 0; iter < n; iter++ {
+			if iter%1000 == 0 {
+				log.Printf("epoch %d, iter %d, sparsity %d / %d", epoch, iter, len(a), n)
+			}
+
+			i := rand.Intn(n)
 			// Consider the dual objective
 			//   f(a + t e[i]) = 1/2 h t^2 - g t + const.
 			// where
@@ -95,10 +96,8 @@ func Train(x Set, y []float64, cost []float64, termfunc TerminateFunc) ([]float6
 		}
 
 		lb = dual(w, a)
-		//log.Println("dual:", lb)
 		ub = primal(w, x, y, cost)
-		//log.Println("primal:", ub)
-		//log.Printf("bounds: [%.6g, %.6g]", lb, ub)
+		log.Printf("epoch %d, primal %.6g, dual %.6g, sparsity %d / %d", epoch, ub, lb, len(a), n)
 
 		term, err := termfunc(epoch+1, ub, ubPrev, lb, lbPrev, w, wPrev, a, aPrev)
 		if err != nil {
@@ -121,7 +120,8 @@ func dual(w []float64, a map[int]float64) float64 {
 
 func primal(w []float64, x Set, y []float64, c []float64) float64 {
 	f := 0.5 * floats.Dot(w, w)
-	for i := 0; i < x.Len(); i++ {
+	n := x.Len()
+	for i := 0; i < n; i++ {
 		f += c[i] * math.Max(0, 1-y[i]*floats.Dot(x.At(i), w))
 	}
 	return f
