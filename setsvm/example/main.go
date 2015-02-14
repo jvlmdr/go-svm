@@ -58,7 +58,12 @@ func main() {
 		z[i], z[j] = z[j], z[i]
 	}
 
-	w, err := setsvm.Train(setsvm.Slice(x), y, cset,
+	sets := make([]setsvm.Set, len(x))
+	for i, xi := range x {
+		sets[i] = setsvm.Slice(xi)
+	}
+
+	w, err := setsvm.Train(sets, y, cset,
 		func(epoch int, f, fPrev, g, gPrev float64, w, wPrev []float64, a, aPrev map[setsvm.Index]float64) (bool, error) {
 			log.Printf("epoch: %d, f: %.6g, g: %.6g, gap: %.6g", epoch, f, g, f-g)
 			if f-g < 1e-4 {
