@@ -14,6 +14,9 @@ const eps = 1e-9
 
 type Index struct{ Set, Elem int }
 
+// TerminateFunc is the function type for deciding to terminate training.
+// f is the current primal objective value.
+// g is the current dual objective value.
 type TerminateFunc func(epoch int, f, fPrev, g, gPrev float64, w, wPrev []float64, a, aPrev map[Index]float64) (bool, error)
 
 // Train computes the weight vector of a linear SVM.
@@ -132,37 +135,36 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc) ([]floa
 				continue
 			}
 
-			// Choose a random k != j.
-			k := j
-			for k != j {
-				k = rand.Intn(x[i].Len())
+			//	// Choose a random k != j.
+			//	k := j
+			//	for k != j {
+			//		k = rand.Intn(x[i].Len())
+			//	}
+			//	hk := floats.Dot(x[i].At(k), x[i].At(k))
+			//	gk := 1 - y[i]*floats.Dot(x[i].At(k), w)
+
+			// Find some k != j such that a[ik] can be decreased.
+			var (
+				k     int
+				found bool
+			)
+			// TODO: Could only loop over non-zero elements in sparse vector?
+			for _, k = range rand.Perm(len(x)) {
+				if k == j {
+					continue
+				}
+				if a[Index{i, k}] > 0 {
+					// Can decrease this element.
+					found = true
+					break
+				}
+			}
+			if !found {
+				log.Print("could not find k != j to decrease")
+				continue
 			}
 			hk := floats.Dot(x[i].At(k), x[i].At(k))
 			gk := 1 - y[i]*floats.Dot(x[i].At(k), w)
-
-			//	// Find some k != j such that a[ik] should also be increased.
-			//	var (
-			//		k      int
-			//		found  bool
-			//	    hk, gk float64
-			//	)
-			//	for _, k = range rand.Perm(x.SetLen(i)) {
-			//		if k == j {
-			//			continue
-			//		}
-			//		hk = floats.Dot(x[i].At(k), x[i].At(k))
-			//		gk = 1 - y[i]*floats.Dot(x[i].At(k), w)
-			//		if math.Abs(gk) <= eps {
-			//			continue
-			//		}
-			//		if gk > 0 {
-			//			found = true
-			//			break
-			//		}
-			//	}
-			//	if !found {
-			//		panic("could not find k != j")
-			//	}
 
 			// Solve for t in f(a + t*e[ij] - t*e[ik]).
 			//   f(a) = 1/2 a' K a - 1' a
@@ -198,7 +200,7 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc) ([]floa
 					delete(a, Index{i, j})
 					//log.Println("increase k, decrease j, constr, t:", tjk)
 				}
-				a[Index{i, j}] -= tjk
+				a[Index{i, k}] -= tjk
 			} else {
 				// Increase a[ij], decrease a[ik]. Ensure a[ik] >= 0.
 				if tmp := a[Index{i, k}] - tjk; tmp > 0 {
