@@ -17,7 +17,7 @@ type Index struct{ Set, Elem int }
 // TerminateFunc is the function type for deciding to terminate training.
 // f is the current primal objective value.
 // g is the current dual objective value.
-type TerminateFunc func(epoch int, f, fPrev, g, gPrev float64, w, wPrev []float64, a, aPrev map[Index]float64) (bool, error)
+type TerminateFunc func(epoch int, f, g float64, w []float64, a map[Index]float64) (bool, error)
 
 // Train computes the weight vector of a linear SVM.
 // The training set is made up of n sets of vectors.
@@ -25,7 +25,7 @@ type TerminateFunc func(epoch int, f, fPrev, g, gPrev float64, w, wPrev []float6
 // an arbitrary number of vectors, but cannot be empty.
 // The vectors must all have the same dimension.
 // The labels y[i] are assumed to be in {-1, 1}.
-func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc) ([]float64, error) {
+func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug bool) ([]float64, error) {
 	// See http://arxiv.org/abs/1312.1743
 	//
 	// The problem is to find w to minimize
@@ -73,17 +73,13 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc) ([]floa
 		log.Println("epoch", epoch)
 		log.Printf("sparsity: %d / %d", len(a), cdf[len(cdf)-1])
 
-		wPrev := make([]float64, len(w))
-		copy(wPrev, w)
-		aPrev := make(map[Index]float64)
-		for idx, val := range a {
-			aPrev[idx] = val
-		}
-		ubPrev := ub
-		lbPrev := lb
-
 		for iter := 0; iter < all; iter++ {
 			i, j := randCumSum(cdf)
+			//	i := rand.Intn(len(x))
+			//	j := rand.Intn(x[i].Len())
+			if debug {
+				log.Printf("set i = %d, example j = %d", i, j)
+			}
 			// Consider the dual objective
 			//   f(a + t e[ij]) = 1/2 h t^2 - g t + const.
 			// where
@@ -94,6 +90,9 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc) ([]floa
 			tj := gj / hj
 			if math.Abs(gj) <= eps {
 				// Consider this optimal.
+				if debug {
+					log.Print("optimal")
+				}
 				continue
 			}
 
@@ -102,19 +101,28 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc) ([]floa
 				if tmp := a[Index{i, j}] + tj; tmp > 0 {
 					// Constraint would not be violated.
 					a[Index{i, j}] = tmp
-					//log.Println("decrease j, unconstr, t:", tj)
+					if debug {
+						log.Printf("decrease j, unconstr, t: %.6g", tj)
+					}
 				} else {
 					if a[Index{i, j}] == 0 {
-						//log.Println("cannot decrease j")
+						if debug {
+							log.Print("cannot decrease j")
+						}
 						continue
 					}
 					// Constraint would be violated.
 					// Choose tj such that a[Index{i, j}] + tj = 0.
 					tj = -a[Index{i, j}]
 					delete(a, Index{i, j})
-					//log.Println("decrease j, constr, t:", tj)
+					if debug {
+						log.Printf("decrease j, constr, t: %.6g", tj)
+					}
 				}
 				sum[i] += tj
+				if debug {
+					log.Printf("a[ij] = %.6g, sum[i] = %.6g", a[Index{i, j}], sum[i])
+				}
 				floats.AddScaled(w, tj*y[i], x[i].At(j))
 				continue
 			}
@@ -123,14 +131,21 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc) ([]floa
 			if sum[i] < cost[i] {
 				if tmp := sum[i] + tj; tmp <= cost[i] {
 					sum[i] = tmp
-					//log.Println("increase j, unconstr, t:", tj)
+					if debug {
+						log.Printf("increase j, unconstr, t: %.6g", tj)
+					}
 				} else {
 					// Choose tj such that sum[i] + tj = cost[i]
 					tj = cost[i] - sum[i]
 					sum[i] = cost[i]
-					//log.Println("increase j, constr, t:", tj)
+					if debug {
+						log.Printf("increase j, constr, t: %.6g", tj)
+					}
 				}
 				a[Index{i, j}] += tj
+				if debug {
+					log.Printf("a[ij] = %.6g, sum[i] = %.6g", a[Index{i, j}], sum[i])
+				}
 				floats.AddScaled(w, tj*y[i], x[i].At(j))
 				continue
 			}
@@ -160,8 +175,13 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc) ([]floa
 				}
 			}
 			if !found {
-				log.Print("could not find k != j to decrease")
+				if debug {
+					log.Print("could not find k != j to decrease")
+				}
 				continue
+			}
+			if debug {
+				log.Print("example pair j, k = %d, %d", j, k)
 			}
 			hk := floats.Dot(x[i].At(k), x[i].At(k))
 			gk := 1 - y[i]*floats.Dot(x[i].At(k), w)
@@ -182,41 +202,58 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc) ([]floa
 			gjk := gj - gk
 			tjk := gjk / hjk
 			if tjk == 0 {
-				//log.Println("no change to i or j")
+				if debug {
+					log.Print("optimal")
+				}
 				continue
 			}
 			if tjk < 0 {
 				// Decrease a[ij], increase a[ik]. Ensure a[ij] >= 0.
 				if tmp := a[Index{i, j}] + tjk; tmp > 0 {
 					a[Index{i, j}] = tmp
-					//log.Println("increase k, decrease j, unconstr, t:", tjk)
+					if debug {
+						log.Printf("increase k, decrease j, unconstr, t: %.6g", tjk)
+					}
 				} else {
 					if a[Index{i, j}] == 0 {
-						//log.Println("would increase k, but cannot decrease j")
+						if debug {
+							log.Print("would increase k, but cannot decrease j")
+						}
 						continue
 					}
 					// Choose tjk such that a[Index{i, j}] + tjk = 0
 					tjk = -a[Index{i, j}]
 					delete(a, Index{i, j})
-					//log.Println("increase k, decrease j, constr, t:", tjk)
+					if debug {
+						log.Printf("increase k, decrease j, constr, t: %.6g", tjk)
+					}
 				}
 				a[Index{i, k}] -= tjk
 			} else {
 				// Increase a[ij], decrease a[ik]. Ensure a[ik] >= 0.
 				if tmp := a[Index{i, k}] - tjk; tmp > 0 {
 					a[Index{i, k}] = tmp
-					//log.Println("increase j, decrease k, unconstr, t:", tjk)
+					if debug {
+						log.Printf("increase j, decrease k, unconstr, t:, %.6g", tjk)
+					}
 				} else {
 					if a[Index{i, k}] == 0 {
-						//log.Println("would increase j, but cannot decrease k")
+						if debug {
+							log.Print("would increase j, but cannot decrease k")
+						}
 						continue
 					}
 					// Choose tjk such that a[Index{i, k}] - tjk = 0
 					tjk = a[Index{i, k}]
 					delete(a, Index{i, k})
-					//log.Println("increase j, decrease k, constr, t:", tjk)
+					if debug {
+						log.Printf("increase j, decrease k, constr, t: %.6g", tjk)
+					}
 				}
 				a[Index{i, j}] += tjk
+			}
+			if debug {
+				log.Printf("a[ij] = %.6g, a[ik] = %.6g", a[Index{i, j}], a[Index{i, k}])
 			}
 			floats.AddScaled(w, tjk*y[i], x[i].At(j))
 			floats.AddScaled(w, -tjk*y[i], x[i].At(k))
@@ -228,7 +265,7 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc) ([]floa
 		//log.Println("primal:", ub)
 		//log.Printf("bounds: [%.4g, %.4g]", lb, ub)
 
-		term, err := termfunc(epoch+1, ub, ubPrev, lb, lbPrev, w, wPrev, a, aPrev)
+		term, err := termfunc(epoch+1, ub, lb, w, a)
 		if err != nil {
 			return nil, err
 		}

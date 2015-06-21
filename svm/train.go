@@ -10,7 +10,7 @@ import (
 
 const eps = 1e-9
 
-type TerminateFunc func(epoch int, f, fPrev, g, gPrev float64, w, wPrev []float64, a, aPrev map[int]float64) (bool, error)
+type TerminateFunc func(epoch int, f, g float64, w []float64, a map[int]float64) (bool, error)
 
 // Train computes the weight vector of a linear SVM.
 // Each example x.At(i) has a label y[i].
@@ -28,15 +28,6 @@ func Train(x Set, y []float64, cost []float64, termfunc TerminateFunc) ([]float6
 	)
 
 	for epoch := 0; ; epoch++ {
-		wPrev := make([]float64, len(w))
-		copy(wPrev, w)
-		aPrev := make(map[int]float64)
-		for i, val := range a {
-			aPrev[i] = val
-		}
-		ubPrev := ub
-		lbPrev := lb
-
 		for iter := 0; iter < n; iter++ {
 			if iter%1000 == 0 {
 				log.Printf("epoch %d, iter %d, sparsity %d / %d", epoch, iter, len(a), n)
@@ -99,7 +90,7 @@ func Train(x Set, y []float64, cost []float64, termfunc TerminateFunc) ([]float6
 		ub = primal(w, x, y, cost)
 		log.Printf("epoch %d, primal %.6g, dual %.6g, sparsity %d / %d", epoch, ub, lb, len(a), n)
 
-		term, err := termfunc(epoch+1, ub, ubPrev, lb, lbPrev, w, wPrev, a, aPrev)
+		term, err := termfunc(epoch+1, ub, lb, w, a)
 		if err != nil {
 			return nil, err
 		}
