@@ -12,7 +12,7 @@ func ExampleTrain() {
 		lambda = 1e-3
 		z      = 10
 	)
-	term := func(epoch int, f, g float64, w []float64, a map[setsvm.Index]float64) (bool, error) {
+	term := func(epoch int, f, g float64, w []float64, a setsvm.Dual) (bool, error) {
 		log.Printf("primal %.4g, dual %.4g", f, g)
 		if epoch >= 1000 {
 			return true, nil

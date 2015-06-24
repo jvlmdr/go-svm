@@ -14,10 +14,20 @@ const eps = 1e-9
 
 type Index struct{ Set, Elem int }
 
+type Dual []map[int]float64
+
+func (a Dual) Len() int {
+	var n int
+	for i := range a {
+		n += len(a[i])
+	}
+	return n
+}
+
 // TerminateFunc is the function type for deciding to terminate training.
 // f is the current primal objective value.
 // g is the current dual objective value.
-type TerminateFunc func(epoch int, f, g float64, w []float64, a map[Index]float64) (bool, error)
+type TerminateFunc func(epoch int, f, g float64, w []float64, a Dual) (bool, error)
 
 // Train computes the weight vector of a linear SVM.
 // The training set is made up of n sets of vectors.
@@ -60,10 +70,13 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug b
 	// Initialize dual variables and weights to zero.
 	var (
 		w  = make([]float64, m)
-		a  = make(map[Index]float64)
 		lb = math.Inf(-1)
 		ub = math.Inf(1)
 	)
+	var a Dual = make([]map[int]float64, len(x))
+	for i := range x {
+		a[i] = make(map[int]float64)
+	}
 	// Maintain sum of dual variables for each set.
 	sum := make([]float64, len(x))
 	// Cumulative sum of number of elements in each set.
@@ -71,7 +84,7 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug b
 
 	for epoch := 0; ; epoch++ {
 		log.Println("epoch", epoch)
-		log.Printf("sparsity: %d / %d", len(a), cdf[len(cdf)-1])
+		log.Printf("sparsity: %d / %d", a.Len(), cdf[len(cdf)-1])
 
 		for iter := 0; iter < all; iter++ {
 			i, j := randCumSum(cdf)
@@ -86,42 +99,49 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug b
 			//   -g = sum_{kl} a[kl] y[i] y[k] dot(x[ij], x[kl]) - 1
 			//   g = 1 - y[i] dot(x[ij], w)
 			hj := floats.Dot(x[i].At(j), x[i].At(j))
+			if math.Abs(hj) < eps {
+				// This can be avoided by adding a bias element to x.
+				log.Println("cannot divide by zero")
+				continue
+			}
 			gj := 1 - y[i]*floats.Dot(x[i].At(j), w)
 			tj := gj / hj
-			if math.Abs(gj) <= eps {
+
+			//	if math.Abs(gj) <= eps {
+			if gj == 0 {
 				// Consider this optimal.
 				if debug {
-					log.Print("optimal")
+					log.Print("optimal in j")
 				}
 				continue
 			}
 
 			if gj < 0 {
 				// Decrease a[ij] subject to separable constraint that a[ij] >= 0.
-				if tmp := a[Index{i, j}] + tj; tmp > 0 {
+				if tmp := a[i][j] + tj; tmp > 0 {
 					// Constraint would not be violated.
-					a[Index{i, j}] = tmp
+					a[i][j] = tmp
 					if debug {
 						log.Printf("decrease j, unconstr, t: %.6g", tj)
 					}
 				} else {
-					if a[Index{i, j}] == 0 {
+					if a[i][j] == 0 {
 						if debug {
 							log.Print("cannot decrease j")
 						}
 						continue
 					}
 					// Constraint would be violated.
-					// Choose tj such that a[Index{i, j}] + tj = 0.
-					tj = -a[Index{i, j}]
-					delete(a, Index{i, j})
+					// Choose tj such that a[i][j] + tj = 0.
+					tj = -a[i][j]
+					delete(a[i], j)
 					if debug {
 						log.Printf("decrease j, constr, t: %.6g", tj)
 					}
 				}
 				sum[i] += tj
 				if debug {
-					log.Printf("a[ij] = %.6g, sum[i] = %.6g", a[Index{i, j}], sum[i])
+					log.Printf("a[ij] = %.6g, sum[i] = %.6g", a[i][j], sum[i])
 				}
 				floats.AddScaled(w, tj*y[i], x[i].At(j))
 				continue
@@ -142,50 +162,50 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug b
 						log.Printf("increase j, constr, t: %.6g", tj)
 					}
 				}
-				a[Index{i, j}] += tj
+				a[i][j] += tj
 				if debug {
-					log.Printf("a[ij] = %.6g, sum[i] = %.6g", a[Index{i, j}], sum[i])
+					log.Printf("a[ij] = %.6g, sum[i] = %.6g", a[i][j], sum[i])
 				}
 				floats.AddScaled(w, tj*y[i], x[i].At(j))
 				continue
 			}
 
-			//	// Choose a random k != j.
-			//	k := j
-			//	for k != j {
-			//		k = rand.Intn(x[i].Len())
-			//	}
-			//	hk := floats.Dot(x[i].At(k), x[i].At(k))
-			//	gk := 1 - y[i]*floats.Dot(x[i].At(k), w)
-
-			// Find some k != j such that a[ik] can be decreased.
-			var (
-				k     int
-				found bool
-			)
-			// TODO: Could only loop over non-zero elements in sparse vector?
-			for _, k = range rand.Perm(len(x)) {
-				if k == j {
-					continue
-				}
-				if a[Index{i, k}] > 0 {
-					// Can decrease this element.
-					found = true
-					break
-				}
-			}
-			if !found {
+			// Sum constraint is active and there is only one element in the sum.
+			if x[i].Len() <= 1 {
 				if debug {
-					log.Print("could not find k != j to decrease")
+					log.Print("cannot increase j")
 				}
 				continue
+			}
+
+			// Would increase a[ij] if the sum constraint was not active.
+			// Jointly modify a[ij] and a[ik] for some k.
+			var k int
+			if a[i][j] == 0 {
+				// If a[ij] is zero, then must find a[ik] that is non-zero to consider.
+				// If both a[ij] and a[ik] were zero, could not decrease either.
+				if len(a[i]) == 0 {
+					// There are no non-zero elements.
+					if debug {
+						log.Print("could not find k != j that is non-zero")
+					}
+					continue
+				}
+				// Assume that a[i][j] == 0 implies that j is not in a[i].
+				k = randKey(a[i])
+			} else {
+				// Choose a random k != j.
+				k = j
+				for k != j {
+					k = rand.Intn(x[i].Len())
+				}
 			}
 			if debug {
 				log.Print("example pair j, k = %d, %d", j, k)
 			}
+
 			hk := floats.Dot(x[i].At(k), x[i].At(k))
 			gk := 1 - y[i]*floats.Dot(x[i].At(k), w)
-
 			// Solve for t in f(a + t*e[ij] - t*e[ik]).
 			//   f(a) = 1/2 a' K a - 1' a
 			// where K_{ij,kl} = y[i] y[k] dot(x[ij], x[kl]).
@@ -199,61 +219,67 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug b
 			//   -g = sum_{pq} a[pq] K_{pq,ij} - sum_{pq} a[pq] K_{pq,ik}
 			//   g = -w' y[i] x[ij] + w' y[i] x[ik]
 			hjk := hj - 2*floats.Dot(x[i].At(j), x[i].At(k)) + hk
+			if math.Abs(hjk) < eps {
+				log.Println("cannot divide by zero")
+				continue
+			}
 			gjk := gj - gk
 			tjk := gjk / hjk
+
 			if tjk == 0 {
 				if debug {
-					log.Print("optimal")
+					log.Print("optimal in j and k")
 				}
 				continue
 			}
+
 			if tjk < 0 {
 				// Decrease a[ij], increase a[ik]. Ensure a[ij] >= 0.
-				if tmp := a[Index{i, j}] + tjk; tmp > 0 {
-					a[Index{i, j}] = tmp
+				if tmp := a[i][j] + tjk; tmp > 0 {
+					a[i][j] = tmp
 					if debug {
 						log.Printf("increase k, decrease j, unconstr, t: %.6g", tjk)
 					}
 				} else {
-					if a[Index{i, j}] == 0 {
+					if a[i][j] == 0 {
 						if debug {
 							log.Print("would increase k, but cannot decrease j")
 						}
 						continue
 					}
-					// Choose tjk such that a[Index{i, j}] + tjk = 0
-					tjk = -a[Index{i, j}]
-					delete(a, Index{i, j})
+					// Choose tjk such that a[i][j] + tjk = 0
+					tjk = -a[i][j]
+					delete(a[i], j)
 					if debug {
 						log.Printf("increase k, decrease j, constr, t: %.6g", tjk)
 					}
 				}
-				a[Index{i, k}] -= tjk
+				a[i][k] -= tjk
 			} else {
 				// Increase a[ij], decrease a[ik]. Ensure a[ik] >= 0.
-				if tmp := a[Index{i, k}] - tjk; tmp > 0 {
-					a[Index{i, k}] = tmp
+				if tmp := a[i][k] - tjk; tmp > 0 {
+					a[i][k] = tmp
 					if debug {
 						log.Printf("increase j, decrease k, unconstr, t:, %.6g", tjk)
 					}
 				} else {
-					if a[Index{i, k}] == 0 {
+					if a[i][k] == 0 {
 						if debug {
 							log.Print("would increase j, but cannot decrease k")
 						}
 						continue
 					}
-					// Choose tjk such that a[Index{i, k}] - tjk = 0
-					tjk = a[Index{i, k}]
-					delete(a, Index{i, k})
+					// Choose tjk such that a[i][k] - tjk = 0
+					tjk = a[i][k]
+					delete(a[i], k)
 					if debug {
 						log.Printf("increase j, decrease k, constr, t: %.6g", tjk)
 					}
 				}
-				a[Index{i, j}] += tjk
+				a[i][j] += tjk
 			}
 			if debug {
-				log.Printf("a[ij] = %.6g, a[ik] = %.6g", a[Index{i, j}], a[Index{i, k}])
+				log.Printf("a[ij] = %.6g, a[ik] = %.6g", a[i][j], a[i][k])
 			}
 			floats.AddScaled(w, tjk*y[i], x[i].At(j))
 			floats.AddScaled(w, -tjk*y[i], x[i].At(k))
@@ -273,6 +299,13 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug b
 			return w, nil
 		}
 	}
+}
+
+func randKey(a map[int]float64) int {
+	for i := range a {
+		return i
+	}
+	panic("empty map")
 }
 
 func dual(w []float64, sum []float64) float64 {
