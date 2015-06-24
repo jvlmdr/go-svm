@@ -30,7 +30,7 @@ func Train(x Set, y []float64, cost []float64, termfunc TerminateFunc) ([]float6
 	for epoch := 0; ; epoch++ {
 		for iter := 0; iter < n; iter++ {
 			if iter%1000 == 0 {
-				log.Printf("epoch %d, iter %d, sparsity %d / %d", epoch, iter, len(a), n)
+				log.Printf("epoch %d, iter %d, non-zero %d / %d", epoch, iter, len(a), n)
 			}
 
 			i := rand.Intn(n)

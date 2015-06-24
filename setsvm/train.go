@@ -83,10 +83,11 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug b
 	cdf := cumSumLens(x)
 
 	for epoch := 0; ; epoch++ {
-		log.Println("epoch", epoch)
-		log.Printf("sparsity: %d / %d", a.Len(), cdf[len(cdf)-1])
-
 		for iter := 0; iter < all; iter++ {
+			if iter%1000 == 0 {
+				log.Printf("epoch %d, iter %d, non-zero %d / %d", epoch, iter, a.Len(), cdf[len(cdf)-1])
+			}
+
 			i, j := randCumSum(cdf)
 			//	i := rand.Intn(len(x))
 			//	j := rand.Intn(x[i].Len())
@@ -99,9 +100,11 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug b
 			//   -g = sum_{kl} a[kl] y[i] y[k] dot(x[ij], x[kl]) - 1
 			//   g = 1 - y[i] dot(x[ij], w)
 			hj := floats.Dot(x[i].At(j), x[i].At(j))
-			if math.Abs(hj) < eps {
+			if math.Abs(hj) <= eps {
 				// This can be avoided by adding a bias element to x.
-				log.Println("cannot divide by zero")
+				if debug {
+					log.Print("skip due to zero denominator: norm of x[ij] is too small")
+				}
 				continue
 			}
 			gj := 1 - y[i]*floats.Dot(x[i].At(j), w)
@@ -220,7 +223,10 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug b
 			//   g = -w' y[i] x[ij] + w' y[i] x[ik]
 			hjk := hj - 2*floats.Dot(x[i].At(j), x[i].At(k)) + hk
 			if math.Abs(hjk) < eps {
-				log.Println("cannot divide by zero")
+				// hjk = xj' xj - 2 xj' xk + xk' xk = ||xj - xk||^2
+				if debug {
+					log.Print("skip due to zero denominator: x[ij] and x[ik] are too similar")
+				}
 				continue
 			}
 			gjk := gj - gk
