@@ -91,9 +91,7 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug b
 			i, j := randCumSum(cdf)
 			//	i := rand.Intn(len(x))
 			//	j := rand.Intn(x[i].Len())
-			if debug {
-				log.Printf("set i = %d, example j = %d", i, j)
-			}
+
 			// Consider the dual objective
 			//   f(a + t e[ij]) = 1/2 h t^2 - g t + const.
 			// where
@@ -185,6 +183,7 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug b
 			// Jointly modify a[ij] and a[ik] for some k.
 			var k int
 			if a[i][j] == 0 {
+				log.Print("j is zero, pick random non-zero k")
 				// If a[ij] is zero, then must find a[ik] that is non-zero to consider.
 				// If both a[ij] and a[ik] were zero, could not decrease either.
 				if len(a[i]) == 0 {
@@ -197,14 +196,12 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug b
 				// Assume that a[i][j] == 0 implies that j is not in a[i].
 				k = randKey(a[i])
 			} else {
+				log.Print("j is non-zero, pick random k")
 				// Choose a random k != j.
 				k = j
 				for k != j {
 					k = rand.Intn(x[i].Len())
 				}
-			}
-			if debug {
-				log.Print("example pair j, k = %d, %d", j, k)
 			}
 
 			hk := floats.Dot(x[i].At(k), x[i].At(k))
@@ -283,9 +280,6 @@ func Train(x []Set, y []float64, cost []float64, termfunc TerminateFunc, debug b
 					}
 				}
 				a[i][j] += tjk
-			}
-			if debug {
-				log.Printf("a[ij] = %.6g, a[ik] = %.6g", a[i][j], a[i][k])
 			}
 			floats.AddScaled(w, tjk*y[i], x[i].At(j))
 			floats.AddScaled(w, -tjk*y[i], x[i].At(k))
